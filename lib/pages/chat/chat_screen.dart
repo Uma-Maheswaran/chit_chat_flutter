@@ -1,9 +1,11 @@
+import 'dart:convert';
+
 import 'package:chat_app/pages/auth/sign_in_page.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:chat_app/pages/chat/chat_message.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class ChatScreen extends StatefulWidget {
   final User user;
@@ -18,15 +20,26 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final _textController = TextEditingController();
+  ScrollController listScrollController = ScrollController();
   final FocusNode _focusNode = FocusNode();
   bool _isSigningOut = false;
   final List<ChatMessage> _messages = [];
+  final GlobalKey<AnimatedListState> listKey = GlobalKey<AnimatedListState>();
   bool _isComposing = false;
   late final User _currentUser;
+  late WebSocketChannel _channel;
+  final List<Map<String, dynamic>> list = [];
 
   @override
   void initState() {
     _currentUser = widget.user;
+    _channel = WebSocketChannel.connect(
+      Uri.parse('ws://chit-chat-115.herokuapp.com/websocket'),
+    );
+    _channel.stream.listen((event) => setState(() {
+      print(json.decode(event));
+      list.add(json.decode(event));
+    }));
     super.initState();
   }
 
@@ -40,56 +53,43 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _isSigningOut
               ? const CircularProgressIndicator()
               : TextButton(
-                  child: IconButton(
-                    color: Colors.white,
-                    icon: const Icon(Icons.logout_rounded),
-                    onPressed: _signOut,
-                  ),
-                  onPressed: _signOut,
-                ),
+            child: IconButton(
+              color: Colors.white,
+              icon: const Icon(Icons.logout_rounded),
+              onPressed: _signOut,
+            ),
+            onPressed: _signOut,
+          ),
         ],
       ),
       body: Column(
         children: [
           Flexible(
               child: Container(
-            decoration: const BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage('assets/1.jpg'),
-                fit: BoxFit.cover,
-              ),
-            ),
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance.collection('data').snapshots(),
-              builder: (BuildContext context,
-                  AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot) {
-                if (snapshot.hasError) {
-                  return const Text('Something went wrong');
-                }
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const CircularProgressIndicator();
-                }
-                List<Map<String, dynamic>> data =
-                    snapshot.data!.docs.map((e) => e.data()).toList();
-                if (kDebugMode) {
-                  print(data);
-                }
-                return ListView.builder(
-                  itemCount: data.length,
-                  itemBuilder: (context, i) {
-                    return ChatMessage(
-                      text: data[i]['text'],
-                      user: _currentUser,
-                      animationController: AnimationController(
-                        duration: const Duration(milliseconds: 600),
-                        vsync: this,
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          )),
+                  decoration: const BoxDecoration(
+                    image: DecorationImage(
+                      image: AssetImage('assets/1.jpg'),
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  child: ListView.builder(
+                    itemCount: list.length,
+                    reverse: false,
+                    controller: listScrollController,
+                    itemBuilder: (context, i) {
+                      print(list[i]);
+                      return ChatMessage(
+                        text: list[i]['message'],
+                        user: _currentUser,
+                        // animationController: AnimationController(
+                        //   duration: const Duration(milliseconds: 600),
+                        //   vsync: this,
+                        // ),
+                        displayName:list[i]['user'] ,
+                      );
+                    },
+                  )
+              )),
           const Divider(height: 1.0),
           Container(
             color: Colors.black87,
@@ -139,34 +139,40 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
+  // Widget slideIt(BuildContext context, int index, animation) {
+  //   Map<String,dynamic> item = list[index];
+  //   TextStyle? textStyle = Theme.of(context).textTheme.headline4;
+  //   return SlideTransition(
+  //     position: Tween<Offset>(
+  //       begin: const Offset(-1, 0),
+  //       end: const Offset(0, 0),
+  //     ).animate(animation),
+  //     child: SizedBox( // Actual widget to display
+  //       //height: 128.0,
+  //       child: ChatMessage(
+  //         text: item['message'],
+  //         user: _currentUser,
+  //         displayName: item['user'],
+  //       ))
+  //     );
+  // }
+
   void _handleSubmitted(String text) {
     _textController.clear();
     setState(() {
       _isComposing = false;
     });
     FirebaseFirestore.instance.collection('data').add({'text': text});
-    var message = ChatMessage(
-      text: text,
-      user: _currentUser,
-      animationController: AnimationController(
-        duration: const Duration(milliseconds: 200),
-        vsync: this,
-      ),
-    );
-    setState(() {
-      _messages.insert(0, message);
-    });
+
+    var params = {
+      "user": _currentUser.displayName,
+      "message": text,
+    };
+    const jsonEncoder = JsonEncoder();
+    _channel.sink.add(jsonEncoder.convert(params));
     _focusNode.requestFocus();
-    message.animationController.forward();
   }
 
-  @override
-  void dispose() {
-    for (var message in _messages) {
-      message.animationController.dispose();
-    }
-    super.dispose();
-  }
 
   Future<void> _signOut() async {
     try {
